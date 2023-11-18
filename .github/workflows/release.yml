@@ -1,42 +1,62 @@
-name: Compile LaTeX and Push PDF
+name: Create Release on PR Merge
 
 on:
-  push:
-    paths:
-      - 'SorgentiTex/**/*.tex'
+  pull_request:
+    types:
+      - closed
 
 jobs:
-  build:
+  create-release:
     runs-on: ubuntu-latest
-
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Get Latest Tag
+        id: get-latest-tag
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+        shell: bash
 
-    - name: Set up LaTeX environment
-      uses: xu-cheng/latex-action@v2
-      with:
-        root_file: ${{ github.event.before }}..${{ github.event.after }}/main.tex
-        builder: latexmk
-        args: -pdfxe
+      - name: Get PR title
+        run: |
+          PR_TITLE=$(curl -sSL https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }} | jq -r '.title')
+          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
 
-    - name: Compile LaTeX
-      run: latexmk
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
 
-    - name: Get parent folder name
-      id: get_folder_name
-      run: echo "::set-output name=folder_name::$(basename $(dirname ${{ github.event.before }}..${{ github.event.after }}/main.tex))"
+      - name: Get Script
+        run: echo "${{ secrets.UPDATE_VERS_SCRIPT }}" > updateVers.py
+        shell: bash
 
-    - name: Copy and Rename PDF to root
-      run: |
-        cp build/main.pdf ${{ github.workspace }}/${{ steps.get_folder_name.outputs.folder_name }}.pdf
+      - name: Update Version
+        run: |
+          NEW_VERS=$(python updateVers.py '${{ env.LATEST_TAG }}' '${{ env.PR_TITLE }}')
+          echo "NEW_VERS=$NEW_VERS" >> $GITHUB_ENV
+        id: create-next-tag
 
-    - name: Push changes
-      uses: ad-m/github-push-action@v0.7.0
-      with:
-        branch: ${{ github.head_ref }}
-        force: true
-        directory: /SorgentiTex
-      env:
+      - name: Create Tag
+        if: ${{ env.NEW_VERS }} != ''
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "<>"
+          git tag -f -a '${{ env.NEW_VERS }}' '${{ github.sha }}' -m 'Creato tag.'
+          git push -f origin '${{ env.NEW_VERS }}'
+
+      - name: Create Release
+        if: ${{ env.NEW_VERS }} != ''
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ env.NEW_VERS }}
+          release_name: ${{ env.NEW_VERS }}
+          body: ${{ env.PR_TITLE }}
+          draft: false
+        env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        
